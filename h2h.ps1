@@ -34,6 +34,21 @@ $Sensors = @(
     @{HWIDeviceName='PC Power Usage'; Name='Total Usage'; Type='Other0'; HASensor='sensor.travis_pc_outlet_summation_delivered'; Unit='kWh'; PropertyType='String'}
 )
 
+# Enable/disable logging. 1 = enable, 0 = disable
+$EnableLogging = 1
+
+# Type of log. 'Single' for one log file, cleared on each run. 'Appended' for one log file, appended to on each run. 'Multiple' for multiple timestamped logs.
+$LogType = 'Single'
+
+# Enable logging of sensor updates. Can grow log files quickly depending on # of sensors!
+$LogSensors = 0
+
+# Prefix used for log files
+$LogPrefix = 'h2h'
+
+# Path to store log files
+$LogPath = './h2h-logs'
+
 <# *************************************** #>
 <# ***** NO MORE UPDATES BEYOND HERE ***** #>
 <# *************************************** #>
@@ -47,6 +62,10 @@ $BufferSize = 1024
 $BufferSizeInitial = $BufferSize * $Sensors.Length
 $BufferArray = $([Byte[]]::CreateInstance([Byte], $BufferSizeInitial))
 $Buffer = New-Object System.ArraySegment[Byte] -ArgumentList @(,$BufferArray)
+
+$TimestampFormat = 'yyyyMMdd_HHmmssfff'
+$StartTimestamp = Get-Date -Format $TimestampFormat
+$LogFileName = 'h2h'
 
 function Receive-Message {
     param (
@@ -70,7 +89,7 @@ function Send-Message {
         [Hashtable]$HashtableMessage
     )
 
-    $JSONMessage = [System.Text.Encoding]::UTF8.GetBytes($($HashtableMessage | ConvertTo-Json))
+    $JSONMessage = [System.Text.Encoding]::UTF8.GetBytes($($HashtableMessage | ConvertTo-Json -Depth 10))
     $ByteMessage = New-Object System.ArraySegment[byte] -ArgumentList @(,$JSONMessage)
         
     $Conn = $WebSocket.SendAsync($ByteMessage, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $CT)
@@ -112,13 +131,22 @@ function Connect-HAInstance {
     )
 
     # Initial WS connection
+    Write-Log "Attempting to connect to $($APIURI)"
     $Conn = $WS.ConnectAsync($APIURI, $CT)
     while (!$Conn.IsCompleted) {
         Start-Sleep -Milliseconds $SleepTime
     }
 
+    if (!($WS.State -eq 'Open')) {
+        throw 'Websocket connection closed prematurely. Check address/port and try again.'
+    }
+    
+    Write-Log "Connected to $($APIURI)"
+
     # Get our authentication required message
-    Receive-Message $WS $CT
+    $msg = Receive-Message $WS $CT
+
+    Write-Log "Received auth message:`n$($msg | ConvertTo-Json -Depth 10)"
 
     $AuthMessage = @{
         type = "auth"
@@ -126,10 +154,16 @@ function Connect-HAInstance {
     }
 
     # Authenticate with HA
+    Write-Log "Sending auth token"
     Send-Message $WS $CT $AuthMessage
     
     # Receive our auth OK
-    Receive-Message $WS $CT
+    $msg = Receive-Message $WS $CT
+    Write-Log "Received auth result:`n$($msg | ConvertTo-Json -Depth 10)"
+
+    if (!($msg.type -eq 'auth_ok')) {
+        throw 'Unable to validate token. Check your LLAT setting and try again.'
+    }
 
     $entities = @()
     foreach ($sensor in $sensors) {
@@ -143,29 +177,59 @@ function Connect-HAInstance {
     }   
 
     # Subscribe to our listed entities
+    Write-Log "Sending subscription list:`n$($SubscribeMessage | ConvertTo-Json -Depth 10)"
     Send-Message $WS $CT $SubscribeMessage
 
     # Receive successful sub message
-    Receive-Message $WS $CT
+    $msg = Receive-Message $WS $CT
+    Write-Log "Received subscription result:`n$($msg | ConvertTo-Json -Depth 10)"
+}
+
+function Write-Log {
+    param (
+        [String]$msg
+    )
+    if ($EnableLogging) {
+        Out-File -Append -FilePath "$($LogPath)/$($LogFileName)" -InputObject "[$(Get-Date -Format $TimestampFormat)]:`t$($msg)"
+    }
 }
 
 try {
     do {
         $WS = New-Object System.Net.WebSockets.ClientWebSocket
         $CT = New-Object System.Threading.CancellationToken
+
+        if ($EnableLogging) {
+            $LogFileName = $LogPrefix
+
+            if ($LogType.ToLower() -eq 'multiple') {
+                $LogFileName += '_' + $StartTimestamp
+            }
+
+            $LogFileName += '.txt'
+
+            if ($LogType.ToLower() -eq 'single' -or !(Test-Path ".\logs\$($LogFileName)")) {
+                New-Item -Path "$($LogPath)/$($LogFileName)" -Force
+            }
+
+            Out-File -Append -FilePath "$($LogPath)/$($LogFileName)" -InputObject "---------- [Websocket Session Started: $($StartTimestamp)] ----------"
+        }
         
         Connect-HAInstance $WS $CT
 
         # Begin our sensor updates
+        Write-Log "Beginning sensor updates. Sensor logging is $(if ($LogSensors) {'ON'} else {'OFF'})"
         while ($WS.State -eq 'Open') {
             # Receive our sensor updates
             $Status = Receive-Message $WS $CT
+            if ($LogSensors) { Write-Log "Received sensor status update:`n$($Status | ConvertTo-Json -Depth 10)" }
 
             # event.c is the usual event updates. Sent for a single sensor at a time
             if ($Status.event.c) {
                 $SensorName = $Status.event.c.PSObject.Properties.Name
                 $SensorState = $Status.event.c.$SensorName.'+'.s
 
+                if ($LogSensors) { Write-Log "Updating sensor '$($SensorName)' to value '$($SensorState)'" }
                 Update-SensorValues $SensorName $SensorState
             }
             # event.a is the initial statuses of ALL sensors
@@ -174,6 +238,7 @@ try {
                     $SensorName = $Sensor
                     $SensorState = $Status.event.a.$Sensor.s
 
+                    if ($LogSensors) { Write-Log "Updating sensor '$($SensorName)' to value '$($SensorState)'" }
                     Update-SensorValues $SensorName $SensorState
                 }
 
@@ -184,9 +249,11 @@ try {
             
         }
     } until ($WS.State -ne 'Open')
+} catch {
+    Write-Log "EXCEPTION! Exception was: $($_.Exception.Message)"
 } finally {
+    Write-Log "Closing websocket and ending session"
     if ($WS) {
-        Write-Host "Closing websocket"
         $WS.Dispose()
     }
 }
