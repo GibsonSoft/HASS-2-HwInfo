@@ -40,7 +40,7 @@ $EnableLogging = 1
 # Type of log. 'Single' for one log file, cleared on each run. 'Appended' for one log file, appended to on each run. 'Multiple' for multiple timestamped logs.
 $LogType = 'Single'
 
-# Enable logging of sensor updates. Can grow log files quickly depending on # of sensors!
+# Enable logging of sensor updates. CAUTION: Can grow log files quickly!
 $LogSensors = 0
 
 # Prefix used for log files
@@ -138,7 +138,7 @@ function Connect-HAInstance {
     }
 
     if (!($WS.State -eq 'Open')) {
-        throw 'Websocket connection closed prematurely. Check address/port and try again.'
+        throw 'Websocket connection closed prematurely. Check address/port for HASS instance.'
     }
     
     Write-Log "Connected to $($APIURI)"
@@ -162,7 +162,7 @@ function Connect-HAInstance {
     Write-Log "Received auth result:`n$($msg | ConvertTo-Json -Depth 10)"
 
     if (!($msg.type -eq 'auth_ok')) {
-        throw 'Unable to validate token. Check your LLAT setting and try again.'
+        throw 'Unable to validate token. Check your HASS LLAT setting.'
     }
 
     $entities = @()
@@ -183,6 +183,10 @@ function Connect-HAInstance {
     # Receive successful sub message
     $msg = Receive-Message $WS $CT
     Write-Log "Received subscription result:`n$($msg | ConvertTo-Json -Depth 10)"
+
+    if (!($msg.success -eq 'true')) {
+        throw 'Subscription result did not succeed. Check HASS sensor IDs in config.'
+    }
 }
 
 function Write-Log {
