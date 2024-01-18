@@ -1,8 +1,11 @@
 # Insert your Long-Lived Access Token (LLAT) here. LLATs can be generated at the bottom of your profile page in HA.
 $Token = '<INSERT LLAT HERE>'
 
-# The server:port of your HA instance
-$HAServer = 'raspberrypi.local:8123'
+# The server of your HA instance
+$HAServer = 'raspberrypi.local'
+
+# The port of your HA instance
+$HAPort = 8123
 
 # Time to sleep in milliseconds before checking for sensor updates
 $SleepTime = 100

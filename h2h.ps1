@@ -1,12 +1,12 @@
 . ./settings.ps1
 Add-Member -InputObject $Sensors -MemberType ScriptMethod -Name FindSensor -Value { param([String]$Column) $this | Where-Object { $_.HASensor -eq $Column }  }
 
-$APIURI = "ws://$($HAServer)/api/websocket"
+$APIURI = "ws://$($HAServer):$($HAPort)/api/websocket"
 $RegBasePath = 'HKCU:\Software\HWiNFO64\Sensors\Custom'
 
 $BufferSize = 1024
-$BufferSizeInitial = $BufferSize * $Sensors.Length
-$BufferArray = $([Byte[]]::CreateInstance([Byte], $BufferSizeInitial))
+$InitialBufferSize = $BufferSize * $Sensors.Length
+$BufferArray = $([Byte[]]::CreateInstance([Byte], $InitialBufferSize))
 $Buffer = New-Object System.ArraySegment[Byte] -ArgumentList @(,$BufferArray)
 
 $TimestampFormat = 'yyyyMMdd_HHmmssfff'
@@ -25,7 +25,7 @@ function Receive-Message {
         Start-Sleep -Milliseconds $SleepTime
     }
 
-    return [System.Text.Encoding]::UTF8.GetString($Buffer.Array).trim([char]0x0000)  | ConvertFrom-Json
+    return $(if ($Conn.IsFaulted) { $null } else { [System.Text.Encoding]::UTF8.GetString($Buffer.Array).trim([char]0x0000)  | ConvertFrom-Json })
 }
 
 function Send-Message {
@@ -144,27 +144,46 @@ function Write-Log {
     }
 }
 
+function Ping-Server {
+    $client = New-Object System.Net.Sockets.TcpClient
+    $timeout = 100
+    $timeoutMultiplier = 1
+
+    $beginConnect = $client.BeginConnect($HAServer, $HAPort, $null, $null)
+
+    while (!($client.Connected) -and ($timeoutMultiplier -le 5)) {
+        Start-Sleep -Milliseconds $timeout
+        $timeoutMultiplier += 1
+        $timeout *= $timeoutMultiplier
+    }
+
+    return $client.Connected
+}
+
 try {
+    if ($EnableLogging) {
+        $LogFileName = $LogPrefix
+
+        if ($LogType.ToLower() -eq 'multiple') {
+            $LogFileName += '_' + $StartTimestamp
+        }
+
+        $LogFileName += '.txt'
+
+        if ($LogType.ToLower() -eq 'single' -or !(Test-Path ".\logs\$($LogFileName)")) {
+            New-Item -Path "$($LogPath)/$($LogFileName)" -Force
+        }
+
+        Out-File -Append -FilePath "$($LogPath)/$($LogFileName)" -InputObject "---------- [Websocket Session Started: $($StartTimestamp)] ----------"
+    }
+
     do {
         $WS = New-Object System.Net.WebSockets.ClientWebSocket
         $CT = New-Object System.Threading.CancellationToken
 
-        if ($EnableLogging) {
-            $LogFileName = $LogPrefix
+        $BufferArray = $([Byte[]]::CreateInstance([Byte], $InitialBufferSize))
+        $Buffer = New-Object System.ArraySegment[Byte] -ArgumentList @(,$BufferArray)
 
-            if ($LogType.ToLower() -eq 'multiple') {
-                $LogFileName += '_' + $StartTimestamp
-            }
-
-            $LogFileName += '.txt'
-
-            if ($LogType.ToLower() -eq 'single' -or !(Test-Path ".\logs\$($LogFileName)")) {
-                New-Item -Path "$($LogPath)/$($LogFileName)" -Force
-            }
-
-            Out-File -Append -FilePath "$($LogPath)/$($LogFileName)" -InputObject "---------- [Websocket Session Started: $($StartTimestamp)] ----------"
-        }
-        
         Connect-HAInstance $WS $CT
 
         # Begin our sensor updates
@@ -172,6 +191,11 @@ try {
         while ($WS.State -eq 'Open') {
             # Receive our sensor updates
             $Status = Receive-Message $WS $CT
+
+            if (!$Status) {
+                break
+            }
+
             if ($LogSensors) { Write-Log "Received sensor status update:`n$($Status | ConvertTo-Json -Depth 10)" }
 
             # event.c is the usual event updates. Sent for a single sensor at a time
@@ -196,9 +220,15 @@ try {
                 $BufferArray = $([Byte[]]::CreateInstance([Byte], $BufferSize))
                 $Buffer = New-Object System.ArraySegment[Byte] -ArgumentList @(,$BufferArray)
             }
-            
         }
-    } until ($WS.State -ne 'Open')
+
+        do {
+            Write-Log "Lost connection to HA. Waiting for HA to become available..."
+        } while (!$(Ping-Server))
+
+        Write-Log "HA Available! Reconnecting..."
+        $WS.Dispose()
+    } until ($false)
 } catch {
     Write-Log "EXCEPTION! Exception was: $($_.Exception.Message)"
 } finally {
