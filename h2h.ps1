@@ -1,4 +1,4 @@
-./settings.ps1
+. ./settings.ps1
 Add-Member -InputObject $Sensors -MemberType ScriptMethod -Name FindSensor -Value { param([String]$Column) $this | ? { $_.HASensor -eq $Column }  }
 
 $APIURI = "ws://$($HAServer)/api/websocket"
