@@ -28,7 +28,9 @@ Once you have that, you will need to edit the following variables in ```settings
 * **$Token**
     * This is your LLAT created in HASS
 * **$HAServer**
-    * This is your server hostname/ip and port
+    * This is your server hostname/ip
+* **$HAPort**
+    * The server port
 * **$SleepTime**
     * The amount of time in milliseconds the script sleeps between checks for updates. Default is 100ms and works well for me, but adjust as needed.
 * **$EnableLogging**
