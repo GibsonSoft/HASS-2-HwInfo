@@ -1,5 +1,5 @@
 . ./settings.ps1
-Add-Member -InputObject $Sensors -MemberType ScriptMethod -Name FindSensor -Value { param([String]$Column) $this | ? { $_.HASensor -eq $Column }  }
+Add-Member -InputObject $Sensors -MemberType ScriptMethod -Name FindSensor -Value { param([String]$Column) $this | Where-Object { $_.HASensor -eq $Column }  }
 
 $APIURI = "ws://$($HAServer)/api/websocket"
 $RegBasePath = 'HKCU:\Software\HWiNFO64\Sensors\Custom'
